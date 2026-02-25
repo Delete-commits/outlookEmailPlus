@@ -7,15 +7,23 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
-from flask import Response, jsonify, request
+from flask import Response, g, jsonify, request
 
+from outlook_web import config
 from outlook_web.audit import log_audit
 from outlook_web.db import get_db
 from outlook_web.errors import build_error_payload
 from outlook_web.repositories import accounts as accounts_repo
 from outlook_web.repositories import groups as groups_repo
 from outlook_web.repositories import tags as tags_repo
-from outlook_web.security.auth import login_required
+from outlook_web.repositories import refresh_logs as refresh_logs_repo
+from outlook_web.repositories import settings as settings_repo
+from outlook_web.repositories.refresh_runs import create_refresh_run, finish_refresh_run
+from outlook_web.repositories.distributed_locks import acquire_distributed_lock, release_distributed_lock
+from outlook_web.security.auth import get_client_ip, get_user_agent, login_required
+from outlook_web.security.crypto import decrypt_data
+from outlook_web.services import graph as graph_service
+from outlook_web.services import refresh as refresh_service
 
 
 def sanitize_input(text: str, max_length: int = 500) -> str:
@@ -700,3 +708,298 @@ def api_generate_export_verify_token() -> Any:
     user_agent = get_user_agent()
     verify_token = issue_export_verify_token(client_ip, user_agent)
     return jsonify({'success': True, 'verify_token': verify_token})
+
+
+# ==================== Token 刷新 API ====================
+
+REFRESH_LOCK_NAME = "refresh_all_tokens"
+
+
+@login_required
+def api_refresh_account(account_id: int) -> Any:
+    """刷新单个账号的 token"""
+    db = get_db()
+    cursor = db.execute('SELECT id, email, client_id, refresh_token, group_id FROM accounts WHERE id = ?', (account_id,))
+    account = cursor.fetchone()
+
+    if not account:
+        error_payload = build_error_payload(
+            "ACCOUNT_NOT_FOUND",
+            "账号不存在",
+            "NotFoundError",
+            404,
+            f"account_id={account_id}"
+        )
+        return jsonify({'success': False, 'error': error_payload})
+
+    account_id = account['id']
+    account_email = account['email']
+    client_id = account['client_id']
+    encrypted_refresh_token = account['refresh_token']
+
+    # 获取分组代理设置
+    proxy_url = ''
+    if account['group_id']:
+        group = groups_repo.get_group_by_id(account['group_id'])
+        if group:
+            proxy_url = group.get('proxy_url', '') or ''
+
+    # 解密 refresh_token
+    try:
+        refresh_token = decrypt_data(encrypted_refresh_token) if encrypted_refresh_token else encrypted_refresh_token
+    except Exception as e:
+        error_msg = f"解密 token 失败: {str(e)}"
+        refresh_logs_repo.log_refresh_result(account_id, account_email, 'manual', 'failed', error_msg)
+        error_payload = build_error_payload(
+            "TOKEN_DECRYPT_FAILED",
+            "Token 解密失败",
+            "DecryptionError",
+            500,
+            error_msg
+        )
+        return jsonify({'success': False, 'error': error_payload})
+
+    # 测试 refresh token
+    success, error_msg = graph_service.test_refresh_token(client_id, refresh_token, proxy_url)
+
+    # 记录刷新结果
+    refresh_logs_repo.log_refresh_result(account_id, account_email, 'manual', 'success' if success else 'failed', error_msg)
+
+    if success:
+        return jsonify({'success': True, 'message': 'Token 刷新成功'})
+
+    error_payload = build_error_payload(
+        "TOKEN_REFRESH_FAILED",
+        "Token 刷新失败",
+        "RefreshTokenError",
+        400,
+        error_msg or "未知错误"
+    )
+    return jsonify({'success': False, 'error': error_payload})
+
+
+@login_required
+def api_refresh_all_accounts() -> Any:
+    """刷新所有账号的 token（流式响应，实时返回进度）"""
+    trace_id_value = None
+    try:
+        trace_id_value = getattr(g, 'trace_id', None)
+    except Exception:
+        trace_id_value = None
+    requested_by_ip = get_client_ip()
+    requested_by_user_agent = get_user_agent()
+
+    def generate():
+        yield from refresh_service.stream_refresh_all_accounts(
+            trace_id=trace_id_value,
+            requested_by_ip=requested_by_ip,
+            requested_by_user_agent=requested_by_user_agent,
+            lock_name=REFRESH_LOCK_NAME,
+            test_refresh_token=graph_service.test_refresh_token,
+        )
+
+    return Response(generate(), mimetype='text/event-stream')
+
+
+@login_required
+def api_retry_refresh_account(account_id: int) -> Any:
+    """重试单个失败账号的刷新"""
+    return api_refresh_account(account_id)
+
+
+@login_required
+def api_refresh_failed_accounts() -> Any:
+    """重试所有失败的账号"""
+    db = get_db()
+    trace_id_value = None
+    try:
+        trace_id_value = getattr(g, 'trace_id', None)
+    except Exception:
+        trace_id_value = None
+    requested_by_ip = get_client_ip()
+    requested_by_user_agent = get_user_agent()
+
+    response_data, status_code = refresh_service.refresh_failed_accounts(
+        db=db,
+        trace_id=trace_id_value,
+        requested_by_ip=requested_by_ip,
+        requested_by_user_agent=requested_by_user_agent,
+        lock_name=REFRESH_LOCK_NAME,
+        test_refresh_token=graph_service.test_refresh_token,
+    )
+    return jsonify(response_data), status_code
+
+
+@login_required
+def api_trigger_scheduled_refresh() -> Any:
+    """手动触发定时刷新（支持强制刷新）"""
+    force = request.args.get('force', 'false').lower() == 'true'
+    trace_id_value = None
+    try:
+        trace_id_value = getattr(g, 'trace_id', None)
+    except Exception:
+        trace_id_value = None
+    requested_by_ip = get_client_ip()
+    requested_by_user_agent = get_user_agent()
+
+    # 获取配置
+    refresh_interval_days = int(settings_repo.get_setting('refresh_interval_days', '30'))
+    use_cron = settings_repo.get_setting('use_cron_schedule', 'false').lower() == 'true'
+
+    # 执行刷新（使用流式响应）
+    def generate():
+        yield from refresh_service.stream_trigger_scheduled_refresh(
+            force=force,
+            refresh_interval_days=refresh_interval_days,
+            use_cron=use_cron,
+            trace_id=trace_id_value,
+            requested_by_ip=requested_by_ip,
+            requested_by_user_agent=requested_by_user_agent,
+            lock_name=REFRESH_LOCK_NAME,
+            test_refresh_token=graph_service.test_refresh_token,
+        )
+
+    return Response(generate(), mimetype='text/event-stream')
+
+
+# ==================== 刷新日志 API ====================
+
+
+@login_required
+def api_get_refresh_logs() -> Any:
+    """获取所有账号的刷新历史（近半年）"""
+    db = get_db()
+    limit = int(request.args.get('limit', 1000))
+    offset = int(request.args.get('offset', 0))
+
+    cursor = db.execute('''
+        SELECT l.*, a.email as account_email
+        FROM account_refresh_logs l
+        LEFT JOIN accounts a ON l.account_id = a.id
+        WHERE l.refresh_type IN ('manual', 'manual_all', 'scheduled', 'retry')
+        AND l.created_at >= datetime('now', '-6 months')
+        ORDER BY l.created_at DESC
+        LIMIT ? OFFSET ?
+    ''', (limit, offset))
+
+    logs = []
+    for row in cursor.fetchall():
+        logs.append({
+            'id': row['id'],
+            'account_id': row['account_id'],
+            'account_email': row['account_email'] or row['account_email'],
+            'refresh_type': row['refresh_type'],
+            'status': row['status'],
+            'error_message': row['error_message'],
+            'created_at': row['created_at']
+        })
+
+    return jsonify({'success': True, 'logs': logs})
+
+
+@login_required
+def api_get_account_refresh_logs(account_id: int) -> Any:
+    """获取单个账号的刷新历史"""
+    db = get_db()
+    limit = int(request.args.get('limit', 50))
+    offset = int(request.args.get('offset', 0))
+
+    cursor = db.execute('''
+        SELECT * FROM account_refresh_logs
+        WHERE account_id = ?
+        ORDER BY created_at DESC
+        LIMIT ? OFFSET ?
+    ''', (account_id, limit, offset))
+
+    logs = []
+    for row in cursor.fetchall():
+        logs.append({
+            'id': row['id'],
+            'account_id': row['account_id'],
+            'account_email': row['account_email'],
+            'refresh_type': row['refresh_type'],
+            'status': row['status'],
+            'error_message': row['error_message'],
+            'created_at': row['created_at']
+        })
+
+    return jsonify({'success': True, 'logs': logs})
+
+
+@login_required
+def api_get_failed_refresh_logs() -> Any:
+    """获取所有失败的刷新记录"""
+    db = get_db()
+
+    # 获取每个账号最近一次失败的刷新记录
+    cursor = db.execute('''
+        SELECT l.*, a.email as account_email, a.status as account_status
+        FROM account_refresh_logs l
+        INNER JOIN (
+            SELECT account_id, MAX(created_at) as last_refresh
+            FROM account_refresh_logs
+            GROUP BY account_id
+        ) latest ON l.account_id = latest.account_id AND l.created_at = latest.last_refresh
+        LEFT JOIN accounts a ON l.account_id = a.id
+        WHERE l.status = 'failed'
+        ORDER BY l.created_at DESC
+    ''')
+
+    logs = []
+    for row in cursor.fetchall():
+        logs.append({
+            'id': row['id'],
+            'account_id': row['account_id'],
+            'account_email': row['account_email'] or row['account_email'],
+            'account_status': row['account_status'],
+            'refresh_type': row['refresh_type'],
+            'status': row['status'],
+            'error_message': row['error_message'],
+            'created_at': row['created_at']
+        })
+
+    return jsonify({'success': True, 'logs': logs})
+
+
+@login_required
+def api_get_refresh_stats() -> Any:
+    """获取刷新统计信息（统计当前失败状态的邮箱数量）"""
+    db = get_db()
+
+    cursor = db.execute('''
+        SELECT MAX(created_at) as last_refresh_time
+        FROM account_refresh_logs
+        WHERE refresh_type IN ('manual', 'manual_all', 'scheduled', 'retry')
+    ''')
+    row = cursor.fetchone()
+    last_refresh_time = row['last_refresh_time'] if row else None
+
+    cursor = db.execute('''
+        SELECT COUNT(*) as total_accounts
+        FROM accounts
+        WHERE status = 'active'
+    ''')
+    total_accounts = cursor.fetchone()['total_accounts']
+
+    cursor = db.execute('''
+        SELECT COUNT(DISTINCT l.account_id) as failed_count
+        FROM account_refresh_logs l
+        INNER JOIN (
+            SELECT account_id, MAX(created_at) as last_refresh
+            FROM account_refresh_logs
+            GROUP BY account_id
+        ) latest ON l.account_id = latest.account_id AND l.created_at = latest.last_refresh
+        INNER JOIN accounts a ON l.account_id = a.id
+        WHERE l.status = 'failed' AND a.status = 'active'
+    ''')
+    failed_count = cursor.fetchone()['failed_count']
+
+    return jsonify({
+        'success': True,
+        'stats': {
+            'total': total_accounts,
+            'success_count': total_accounts - failed_count,
+            'failed_count': failed_count,
+            'last_refresh_time': last_refresh_time
+        }
+    })

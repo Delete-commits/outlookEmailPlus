@@ -5,7 +5,7 @@ from flask import Blueprint
 from outlook_web.controllers import accounts as accounts_controller
 
 
-def create_blueprint(*, impl) -> Blueprint:
+def create_blueprint() -> Blueprint:
     bp = Blueprint("accounts", __name__)
 
     # 基础 CRUD（已迁移到 controllers）
@@ -27,18 +27,18 @@ def create_blueprint(*, impl) -> Blueprint:
     bp.add_url_rule("/api/accounts/export-selected", view_func=accounts_controller.api_export_selected_accounts, methods=["POST"])
     bp.add_url_rule("/api/export/verify", view_func=accounts_controller.api_generate_export_verify_token, methods=["POST"])
 
-    # Token 刷新（暂保留 legacy 实现，后续迁移）
-    bp.add_url_rule("/api/accounts/<int:account_id>/refresh", view_func=impl.api_refresh_account, methods=["POST"])
-    bp.add_url_rule("/api/accounts/refresh-all", view_func=impl.api_refresh_all_accounts, methods=["GET"])
-    bp.add_url_rule("/api/accounts/<int:account_id>/retry-refresh", view_func=impl.api_retry_refresh_account, methods=["POST"])
-    bp.add_url_rule("/api/accounts/refresh-failed", view_func=impl.api_refresh_failed_accounts, methods=["POST"])
-    bp.add_url_rule("/api/accounts/trigger-scheduled-refresh", view_func=impl.api_trigger_scheduled_refresh, methods=["GET"])
+    # Token 刷新（已迁移到 controllers）
+    bp.add_url_rule("/api/accounts/<int:account_id>/refresh", view_func=accounts_controller.api_refresh_account, methods=["POST"])
+    bp.add_url_rule("/api/accounts/refresh-all", view_func=accounts_controller.api_refresh_all_accounts, methods=["GET"])
+    bp.add_url_rule("/api/accounts/<int:account_id>/retry-refresh", view_func=accounts_controller.api_retry_refresh_account, methods=["POST"])
+    bp.add_url_rule("/api/accounts/refresh-failed", view_func=accounts_controller.api_refresh_failed_accounts, methods=["POST"])
+    bp.add_url_rule("/api/accounts/trigger-scheduled-refresh", view_func=accounts_controller.api_trigger_scheduled_refresh, methods=["GET"])
 
-    # 刷新日志（暂保留 legacy 实现，后续迁移）
-    bp.add_url_rule("/api/accounts/refresh-logs", view_func=impl.api_get_refresh_logs, methods=["GET"])
-    bp.add_url_rule("/api/accounts/<int:account_id>/refresh-logs", view_func=impl.api_get_account_refresh_logs, methods=["GET"])
-    bp.add_url_rule("/api/accounts/refresh-logs/failed", view_func=impl.api_get_failed_refresh_logs, methods=["GET"])
-    bp.add_url_rule("/api/accounts/refresh-stats", view_func=impl.api_get_refresh_stats, methods=["GET"])
+    # 刷新日志（已迁移到 controllers）
+    bp.add_url_rule("/api/accounts/refresh-logs", view_func=accounts_controller.api_get_refresh_logs, methods=["GET"])
+    bp.add_url_rule("/api/accounts/<int:account_id>/refresh-logs", view_func=accounts_controller.api_get_account_refresh_logs, methods=["GET"])
+    bp.add_url_rule("/api/accounts/refresh-logs/failed", view_func=accounts_controller.api_get_failed_refresh_logs, methods=["GET"])
+    bp.add_url_rule("/api/accounts/refresh-stats", view_func=accounts_controller.api_get_refresh_stats, methods=["GET"])
 
     return bp
 
