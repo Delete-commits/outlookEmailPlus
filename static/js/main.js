@@ -989,11 +989,15 @@ ${details}
                     document.getElementById('pollingCount').value = data.settings.polling_count || '5';
 
                     // 加载 Telegram 推送设置
-                    document.getElementById('telegramBotToken').value = data.telegram_bot_token || '';
-                    document.getElementById('telegramChatId').value = data.telegram_chat_id || '';
-                    document.getElementById('telegramPollInterval').value = data.telegram_poll_interval || '600';
+                    const tgToken = document.getElementById('telegramBotToken');
+                    const tgChat = document.getElementById('telegramChatId');
+                    const tgPoll = document.getElementById('telegramPollInterval');
+                    if (tgToken) tgToken.value = data.telegram_bot_token || '';
+                    if (tgChat) tgChat.value = data.telegram_chat_id || '';
+                    if (tgPoll) tgPoll.value = data.telegram_poll_interval || '600';
                 }
             } catch (error) {
+                console.error('loadSettings error:', error);
                 showToast('加载设置失败', 'error');
             }
         }
@@ -1126,9 +1130,12 @@ ${details}
             settings.polling_count = pCount;
 
             // Telegram 推送配置
-            const tgBotToken = document.getElementById('telegramBotToken').value.trim();
-            const tgChatId = document.getElementById('telegramChatId').value.trim();
-            const tgPollInterval = parseInt(document.getElementById('telegramPollInterval').value);
+            const tgBotTokenEl = document.getElementById('telegramBotToken');
+            const tgChatIdEl = document.getElementById('telegramChatId');
+            const tgPollIntervalEl = document.getElementById('telegramPollInterval');
+            const tgBotToken = tgBotTokenEl ? tgBotTokenEl.value.trim() : '';
+            const tgChatId = tgChatIdEl ? tgChatIdEl.value.trim() : '';
+            const tgPollInterval = tgPollIntervalEl ? parseInt(tgPollIntervalEl.value) : NaN;
 
             if (tgBotToken) {
                 settings.telegram_bot_token = tgBotToken;

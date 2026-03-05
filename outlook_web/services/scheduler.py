@@ -92,6 +92,7 @@ def _configure_telegram_push_job(scheduler, app) -> None:
         coalesce=True,
         misfire_grace_time=interval,
     )
+    print(f"✓ Telegram 推送 Job 已配置（轮询间隔：{interval} 秒）")
 
 
 def configure_scheduler_jobs(scheduler, app, test_refresh_token) -> None:

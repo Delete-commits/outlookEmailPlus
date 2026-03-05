@@ -408,9 +408,12 @@ def get_telegram_push_accounts() -> List[Dict]:
     """返回所有 telegram_push_enabled=1 且非 disabled 状态的账号。"""
     db = get_db()
     rows = db.execute(
-        """SELECT id, email, provider, refresh_token, imap_host, imap_port,
-                  imap_password, telegram_last_checked_at
-           FROM accounts
-           WHERE telegram_push_enabled = 1 AND status != 'disabled'"""
+        """SELECT a.id, a.email, a.provider, a.client_id, a.refresh_token,
+                  a.imap_host, a.imap_port, a.imap_password,
+                  a.telegram_last_checked_at, a.group_id,
+                  g.proxy_url
+           FROM accounts a
+           LEFT JOIN groups g ON a.group_id = g.id
+           WHERE a.telegram_push_enabled = 1 AND a.status != 'disabled'"""
     ).fetchall()
     return [dict(r) for r in rows]

@@ -205,12 +205,14 @@ def _fetch_new_emails_imap(account: dict, since: str) -> List[dict]:
 def _fetch_new_emails_graph(account: dict, since: str) -> List[dict]:
     """通过 Microsoft Graph API 获取 received_at > since 的邮件，最多返回 50 封。"""
     from outlook_web.security.crypto import decrypt_data
-    from outlook_web.services.graph import get_access_token
+    from outlook_web.services.graph import build_proxies, get_access_token_graph
 
+    client_id = account.get("client_id", "")
     refresh_token_raw = account.get("refresh_token", "")
     refresh_token = decrypt_data(refresh_token_raw) if refresh_token_raw else ""
+    proxy_url = account.get("proxy_url", "") or ""
 
-    access_token = get_access_token(refresh_token)
+    access_token = get_access_token_graph(client_id, refresh_token, proxy_url)
     if not access_token:
         return []
 
@@ -223,10 +225,11 @@ def _fetch_new_emails_graph(account: dict, since: str) -> List[dict]:
         "$orderby": "receivedDateTime asc",
     }
     headers = {"Authorization": f"Bearer {access_token}"}
+    proxies = build_proxies(proxy_url)
 
     results: List[dict] = []
     try:
-        resp = requests.get(url, headers=headers, params=params, timeout=15)
+        resp = requests.get(url, headers=headers, params=params, timeout=15, proxies=proxies)
         if not resp.ok:
             return []
         data = resp.json()
@@ -258,6 +261,11 @@ def _fetch_new_emails_graph(account: dict, since: str) -> List[dict]:
 
 def run_telegram_push_job(app) -> None:
     """主入口：轮询 → 推送 → 更新游标。由调度器调用。"""
+    import time
+
+    t0 = time.monotonic()
+    logger.info("[telegram_push] job started")
+
     with app.app_context():
         from outlook_web.repositories.accounts import (
             get_telegram_push_accounts,
@@ -271,10 +279,12 @@ def run_telegram_push_job(app) -> None:
         chat_id = get_setting("telegram_chat_id", "")
 
         if not bot_token or not chat_id:
+            logger.info("[telegram_push] job skipped: no bot_token or chat_id")
             return
 
         accounts = get_telegram_push_accounts()
         if not accounts:
+            logger.info("[telegram_push] job skipped: no push-enabled accounts")
             return
 
         job_start_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
@@ -309,3 +319,6 @@ def run_telegram_push_job(app) -> None:
 
             finally:
                 update_telegram_cursor(account["id"], job_start_time)
+
+    elapsed = time.monotonic() - t0
+    logger.info("[telegram_push] job finished: sent=%d elapsed=%.1fs", sent_count, elapsed)
