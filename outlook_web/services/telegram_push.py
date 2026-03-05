@@ -263,9 +263,32 @@ def _fetch_new_emails_graph(account: dict, since: str) -> List[dict]:
 # ---------------------------------------------------------------------------
 
 
+def _fetch_account_emails(account: dict) -> tuple:
+    """并行获取单个账号新邮件，返回 (account, emails_list, error)。"""
+    last_checked = account.get("telegram_last_checked_at")
+    if last_checked is None:
+        return (account, None, None)  # 首次运行，仅设置游标
+
+    try:
+        if account.get("provider") == "outlook":
+            emails = _fetch_new_emails_graph(account, last_checked)
+        else:
+            emails = _fetch_new_emails_imap(account, last_checked)
+
+        logger.info(
+            "[telegram_push] account=%s provider=%s since=%s found=%d",
+            account.get("email"), account.get("provider"), last_checked, len(emails),
+        )
+        return (account, emails, None)
+    except Exception as e:
+        logger.warning("[telegram_push] account=%s error: %s", account.get("email"), e)
+        return (account, None, e)
+
+
 def run_telegram_push_job(app) -> None:
-    """主入口：轮询 → 推送 → 更新游标。由调度器调用。"""
+    """主入口：并行轮询 → 推送 → 更新游标。由调度器调用。"""
     import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     t0 = time.monotonic()
     logger.info("[telegram_push] job started")
@@ -294,41 +317,36 @@ def run_telegram_push_job(app) -> None:
         job_start_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
         sent_count = 0
 
-        for account in accounts:
+        # 并行获取所有账号邮件
+        fetch_results = []
+        with ThreadPoolExecutor(max_workers=min(len(accounts), 10)) as executor:
+            futures = {executor.submit(_fetch_account_emails, acc): acc for acc in accounts}
+            for future in as_completed(futures):
+                fetch_results.append(future.result())
+
+        # 顺序推送 + 更新游标
+        for account, emails, error in fetch_results:
+            if emails is None and error is None:
+                # 首次运行，仅设置游标
+                update_telegram_cursor(account["id"], job_start_time)
+                continue
+
+            if error is not None:
+                # fetch 失败，不推进游标
+                continue
+
             if sent_count >= MAX_SENT_PER_JOB:
                 update_telegram_cursor(account["id"], job_start_time)
                 continue
 
-            last_checked = account.get("telegram_last_checked_at")
+            for em in sorted(emails, key=lambda e: e.get("received_at", "")):
+                if sent_count >= MAX_SENT_PER_JOB:
+                    break
+                msg = _build_telegram_message(account["email"], em)
+                if _send_telegram_message(bot_token, chat_id, msg):
+                    sent_count += 1
 
-            if last_checked is None:
-                update_telegram_cursor(account["id"], job_start_time)
-                continue
-
-            try:
-                if account.get("provider") == "outlook":
-                    emails = _fetch_new_emails_graph(account, last_checked)
-                else:
-                    emails = _fetch_new_emails_imap(account, last_checked)
-
-                logger.info(
-                    "[telegram_push] account=%s provider=%s since=%s found=%d",
-                    account.get("email"), account.get("provider"), last_checked, len(emails),
-                )
-
-                for em in sorted(emails, key=lambda e: e.get("received_at", "")):
-                    if sent_count >= MAX_SENT_PER_JOB:
-                        break
-                    msg = _build_telegram_message(account["email"], em)
-                    if _send_telegram_message(bot_token, chat_id, msg):
-                        sent_count += 1
-
-                # 仅在 fetch 成功时推进游标（失败时保留旧游标，避免漏推）
-                update_telegram_cursor(account["id"], job_start_time)
-
-            except Exception as e:
-                logger.warning("[telegram_push] account=%s error: %s", account.get("email"), e)
-                # 不推进游标——下次重试时会重新拉取
+            update_telegram_cursor(account["id"], job_start_time)
 
     elapsed = time.monotonic() - t0
     logger.info("[telegram_push] job finished: sent=%d elapsed=%.1fs", sent_count, elapsed)
