@@ -4,8 +4,9 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from flask import jsonify
+from flask import jsonify, request
 
+from outlook_web import __version__ as APP_VERSION
 from outlook_web import config
 from outlook_web.db import (
     DB_SCHEMA_LAST_UPGRADE_ERROR_KEY,
@@ -14,8 +15,10 @@ from outlook_web.db import (
     DB_SCHEMA_VERSION_KEY,
     create_sqlite_connection,
 )
+from outlook_web.repositories import accounts as accounts_repo
 from outlook_web.repositories import settings as settings_repo
-from outlook_web.security.auth import login_required
+from outlook_web.security.auth import api_key_required, login_required
+from outlook_web.services import external_api as external_api_service
 
 # 常量
 REFRESH_LOCK_NAME = "token_refresh"
@@ -246,3 +249,86 @@ def api_system_upgrade_status() -> Any:
         )
     finally:
         conn.close()
+
+
+# ==================== External System API ====================
+
+
+@api_key_required
+def api_external_health() -> Any:
+    """对外健康检查（不依赖登录态）"""
+    conn = create_sqlite_connection()
+    try:
+        db_ok = True
+        try:
+            conn.execute("SELECT 1").fetchone()
+        except Exception:
+            db_ok = False
+
+        data = {
+            "status": "ok",
+            "service": "outlook-email-plus",
+            "version": APP_VERSION,
+            "server_time_utc": utcnow().isoformat() + "Z",
+            "database": "ok" if db_ok else "error",
+        }
+        return jsonify(external_api_service.ok(data))
+    finally:
+        conn.close()
+
+
+@api_key_required
+def api_external_capabilities() -> Any:
+    """对外能力说明接口"""
+    data = {
+        "service": "outlook-email-plus",
+        "version": APP_VERSION,
+        "features": [
+            "message_list",
+            "message_detail",
+            "raw_content",
+            "verification_code",
+            "verification_link",
+            "wait_message",
+        ],
+    }
+    return jsonify(external_api_service.ok(data))
+
+
+@api_key_required
+def api_external_account_status() -> Any:
+    """对外账号状态检查"""
+    email_addr = (request.args.get("email") or "").strip()
+    if not email_addr or "@" not in email_addr:
+        return jsonify(external_api_service.fail("INVALID_PARAM", "email 参数不合法")), 400
+
+    account = accounts_repo.get_account_by_email(email_addr)
+    if not account:
+        return jsonify(external_api_service.fail("ACCOUNT_NOT_FOUND", "账号不存在", data={"email": email_addr})), 404
+
+    account_type = (account.get("account_type") or "outlook").strip().lower()
+    provider = (account.get("provider") or account_type or "outlook").strip().lower()
+    preferred_method = "imap_generic" if account_type == "imap" else "graph"
+    status = (account.get("status") or "active").strip().lower()
+    can_read = status != "disabled"
+    if can_read:
+        if account_type == "imap":
+            can_read = bool((account.get("imap_host") or "").strip()) and bool((account.get("imap_password") or "").strip())
+        else:
+            can_read = bool((account.get("client_id") or "").strip()) and bool((account.get("refresh_token") or "").strip())
+
+    return jsonify(
+        external_api_service.ok(
+            {
+                "email": email_addr,
+                "exists": True,
+                "account_type": account_type,
+                "provider": provider,
+                "group_id": account.get("group_id"),
+                "status": account.get("status"),
+                "last_refresh_at": account.get("last_refresh_at"),
+                "preferred_method": preferred_method,
+                "can_read": can_read,
+            }
+        )
+    )

@@ -323,10 +323,17 @@
                             <input type="password" class="form-input" id="settingsPassword" placeholder="输入新密码（留空则不修改）">
                             <div class="form-hint">用于登录系统的密码</div>
                         </div>
+                         <div class="form-group">
+                             <label class="form-label">GPTMail API Key</label>
+                             <input type="text" class="form-input" id="settingsApiKey" placeholder="输入 GPTMail API Key">
+                             <div class="form-hint">用于临时邮箱功能，可从 <a href="https://mail.chatgpt.org.uk/api" target="_blank" style="color: var(--clr-primary);">gptmail.io</a> 获取</div>
+                         </div>
                         <div class="form-group">
-                            <label class="form-label">GPTMail API Key</label>
-                            <input type="text" class="form-input" id="settingsApiKey" placeholder="输入 GPTMail API Key">
-                            <div class="form-hint">用于临时邮箱功能，可从 <a href="https://mail.chatgpt.org.uk/api" target="_blank" style="color: var(--clr-primary);">gptmail.io</a> 获取</div>
+                            <label class="form-label">对外开放 API Key</label>
+                            <input type="password" class="form-input" id="settingsExternalApiKey" placeholder="用于 /api/external/* 的 X-API-Key" autocomplete="off">
+                            <div class="form-hint" id="externalApiKeyHint">
+                                用于对外开放接口鉴权（请求头：X-API-Key）。如需禁用对外开放接口，可清空后保存。
+                            </div>
                         </div>
 
                         <!-- Token 刷新设置 -->

@@ -14,18 +14,19 @@ from outlook_web.security.crypto import decrypt_data, encrypt_data, hash_passwor
 # ==================== 设置 API ====================
 
 
+def _mask_secret_value(value: str, head: int = 4, tail: int = 4) -> str:
+    if not value:
+        return ""
+    safe_value = str(value)
+    if len(safe_value) <= head + tail:
+        return "*" * len(safe_value)
+    return safe_value[:head] + ("*" * (len(safe_value) - head - tail)) + safe_value[-tail:]
+
+
 @login_required
 def api_get_settings() -> Any:
     """获取所有设置"""
     all_settings = settings_repo.get_all_settings()
-
-    def mask_secret_value(value: str, head: int = 4, tail: int = 4) -> str:
-        if not value:
-            return ""
-        safe_value = str(value)
-        if len(safe_value) <= head + tail:
-            return "*" * len(safe_value)
-        return safe_value[:head] + ("*" * (len(safe_value) - head - tail)) + safe_value[-tail:]
 
     # 仅返回前端需要的设置项（避免把敏感字段/内部状态直接返回）
     safe_settings = {
@@ -43,9 +44,12 @@ def api_get_settings() -> Any:
     # 敏感字段：不返回明文/哈希，仅提供"是否已设置/脱敏展示"
     login_password_value = all_settings.get("login_password") or ""
     gptmail_api_key_value = all_settings.get("gptmail_api_key") or ""
+    external_api_key_value = settings_repo.get_external_api_key()
     safe_settings["login_password_set"] = bool(login_password_value)
     safe_settings["gptmail_api_key_set"] = bool(gptmail_api_key_value)
-    safe_settings["gptmail_api_key_masked"] = mask_secret_value(gptmail_api_key_value) if gptmail_api_key_value else ""
+    safe_settings["gptmail_api_key_masked"] = _mask_secret_value(gptmail_api_key_value) if gptmail_api_key_value else ""
+    safe_settings["external_api_key_set"] = bool(external_api_key_value)
+    safe_settings["external_api_key_masked"] = _mask_secret_value(external_api_key_value) if external_api_key_value else ""
 
     # Telegram 推送配置
     tg_bot_token_raw = all_settings.get("telegram_bot_token", "")
@@ -99,12 +103,39 @@ def api_update_settings() -> Any:
 
     # 更新 GPTMail API Key
     if "gptmail_api_key" in data:
-        new_api_key = data["gptmail_api_key"].strip()
-        if new_api_key:
+        new_api_key = str(data["gptmail_api_key"] or "").strip()
+        existing_api_key = settings_repo.get_setting("gptmail_api_key", "") or ""
+        if new_api_key and existing_api_key and new_api_key == _mask_secret_value(existing_api_key):
+            updated.append("GPTMail API Key（未变更）")
+        elif new_api_key:
             if settings_repo.set_setting("gptmail_api_key", new_api_key):
                 updated.append("GPTMail API Key")
             else:
                 errors.append("更新 GPTMail API Key 失败")
+        else:
+            # 允许清空（用于禁用临时邮箱能力）
+            if settings_repo.set_setting("gptmail_api_key", ""):
+                updated.append("GPTMail API Key（已清空）")
+            else:
+                errors.append("清空 GPTMail API Key 失败")
+
+    # 更新对外开放 API Key（建议加密存储）
+    if "external_api_key" in data:
+        new_external_api_key = str(data["external_api_key"] or "").strip()
+        existing_external_api_key = settings_repo.get_external_api_key()
+        if new_external_api_key and existing_external_api_key and new_external_api_key == _mask_secret_value(existing_external_api_key):
+            updated.append("对外 API Key（未变更）")
+        elif new_external_api_key:
+            encrypted_key = encrypt_data(new_external_api_key)
+            if settings_repo.set_setting("external_api_key", encrypted_key):
+                updated.append("对外 API Key")
+            else:
+                errors.append("更新对外 API Key 失败")
+        else:
+            if settings_repo.set_setting("external_api_key", ""):
+                updated.append("对外 API Key（已清空）")
+            else:
+                errors.append("清空对外 API Key 失败")
 
     # 更新刷新周期
     if "refresh_interval_days" in data:

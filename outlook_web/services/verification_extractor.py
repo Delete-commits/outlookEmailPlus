@@ -40,6 +40,15 @@ VERIFICATION_PATTERN = r"\b[A-Z0-9]{4,8}\b"
 # 链接正则表达式
 LINK_PATTERN = r'https?://[^\s<>"{}|\\^`\[\]]+'
 
+# 对外/参数化提取：验证链接优先关键词
+DEFAULT_LINK_KEYWORDS = [
+    "verify",
+    "confirmation",
+    "confirm",
+    "activate",
+    "validation",
+]
+
 
 class HTMLTextExtractor(HTMLParser):
     """HTML 转纯文本提取器"""
@@ -323,3 +332,214 @@ def extract_verification_info(email: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("未找到验证信息")
 
     return result
+
+
+def _extract_content_text_without_subject(email: Dict[str, Any]) -> str:
+    """
+    仅提取邮件正文/预览（不回退到 subject）。
+
+    注意：extract_email_text() 会在末尾回退 subject；该函数用于 code_source=content 时严格遵循语义。
+    """
+    # 优先使用纯文本
+    if email.get("body") and str(email["body"]).strip():
+        return str(email["body"]).strip()
+
+    # 其次使用 HTML 转纯文本
+    if email.get("body_html") and str(email["body_html"]).strip():
+        parser = HTMLTextExtractor()
+        try:
+            parser.feed(str(email["body_html"]))
+            text = html.unescape(parser.get_text() or "")
+            return text.strip()
+        except Exception:
+            return ""
+
+    # Graph API 格式 bodyContent/bodyContentType
+    if email.get("bodyContent") and str(email["bodyContent"]).strip():
+        content = str(email["bodyContent"])
+        if str(email.get("bodyContentType") or "").lower() == "html":
+            parser = HTMLTextExtractor()
+            try:
+                parser.feed(content)
+                text = html.unescape(parser.get_text() or "")
+                return text.strip()
+            except Exception:
+                return ""
+        return content.strip()
+
+    if email.get("body_preview") and str(email["body_preview"]).strip():
+        return str(email["body_preview"]).strip()
+
+    return ""
+
+
+def _parse_code_length(code_length: str) -> tuple[int, int]:
+    m = re.match(r"^(\d+)-(\d+)$", str(code_length or "").strip())
+    if not m:
+        raise ValueError("code_length 参数无效")
+    min_len = int(m.group(1))
+    max_len = int(m.group(2))
+    if min_len <= 0 or max_len <= 0 or min_len > max_len:
+        raise ValueError("code_length 参数无效")
+    return min_len, max_len
+
+
+def _build_code_regex(*, code_regex: str | None, code_length: str | None) -> re.Pattern:
+    if code_regex:
+        try:
+            return re.compile(code_regex)
+        except re.error as exc:
+            raise ValueError("code_regex 参数无效") from exc
+
+    if code_length:
+        min_len, max_len = _parse_code_length(code_length)
+        return re.compile(rf"\b\d{{{min_len},{max_len}}}\b")
+
+    # 默认：4-8 位数字验证码（更贴近“验证码”场景）
+    return re.compile(r"\b\d{4,8}\b")
+
+
+def _smart_extract_code_by_keywords(email_content: str, code_re: re.Pattern) -> Optional[str]:
+    if not email_content:
+        return None
+
+    content_lower = email_content.lower()
+
+    for keyword in VERIFICATION_KEYWORDS:
+        keyword_lower = keyword.lower()
+        pos = content_lower.find(keyword_lower)
+        if pos == -1:
+            continue
+
+        start = max(0, pos - 50)
+        end = min(len(email_content), pos + len(keyword) + 50)
+        context = email_content[start:end]
+
+        for m in code_re.finditer(context):
+            value = m.group(0)
+            if value and any(c.isdigit() for c in value):
+                return value.upper()
+
+    return None
+
+
+def _fallback_extract_code(email_content: str, code_re: re.Pattern) -> Optional[str]:
+    if not email_content:
+        return None
+
+    candidates: List[str] = []
+    for m in code_re.finditer(email_content):
+        value = m.group(0) or ""
+        if not value:
+            continue
+
+        # 与现有提取器保持一致：必须包含至少一个数字
+        if not any(c.isdigit() for c in value):
+            continue
+
+        # 过滤常见误判（仅对纯数字候选生效）
+        if value.isdigit() and len(value) == 4:
+            year = int(value)
+            if 1900 <= year <= 2100:
+                continue
+            hour = int(value[:2])
+            minute = int(value[2:])
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                continue
+            num = int(value)
+            if 2020 <= num <= 2030:
+                continue
+
+        candidates.append(value.upper())
+
+    return candidates[0] if candidates else None
+
+
+def _pick_preferred_link(links: List[str], prefer_link_keywords: List[str]) -> Optional[str]:
+    if not links:
+        return None
+
+    keywords = [k.lower() for k in (prefer_link_keywords or []) if k]
+    if keywords:
+        for keyword in keywords:
+            for link in links:
+                if keyword in (link or "").lower():
+                    return link
+
+    return links[0]
+
+
+def extract_verification_info_with_options(
+    email: Dict[str, Any],
+    *,
+    code_regex: str | None = None,
+    code_length: str | None = None,
+    code_source: str = "all",
+    prefer_link_keywords: list[str] | None = None,
+) -> Dict[str, Any]:
+    """
+    在现有提取器基础上支持：
+    - 自定义验证码正则（code_regex）
+    - 自定义验证码长度范围（code_length，如 4-8 / 6-6）
+    - 提取来源限定（subject/content/html/all）
+    - 验证链接关键词优先级（prefer_link_keywords）
+
+    返回结构为兼容扩展字典：
+    - verification_code
+    - verification_link
+    - links
+    - formatted
+    - match_source
+    - confidence
+
+    注意：该函数主要服务外部 API，不主动抛“未找到验证码/链接”的异常，方便上层按需映射错误码。
+    """
+    subject = str(email.get("subject") or "").strip()
+    content = _extract_content_text_without_subject(email)
+    html_content = str(email.get("body_html") or email.get("html_content") or "").strip()
+
+    source = str(code_source or "all").strip().lower()
+    if source == "subject":
+        source_text = subject
+        match_source = "subject"
+    elif source == "content":
+        source_text = content
+        match_source = "content"
+    elif source == "html":
+        source_text = html_content
+        match_source = "html"
+    else:
+        source_text = f"{subject} {content} {html_content}".strip()
+        match_source = "all"
+
+    code_re = _build_code_regex(code_regex=code_regex, code_length=code_length)
+
+    verification_code = _smart_extract_code_by_keywords(source_text, code_re)
+    confidence = "high" if verification_code else "low"
+    if not verification_code:
+        verification_code = _fallback_extract_code(source_text, code_re)
+
+    links = extract_links(f"{subject} {content} {html_content}".strip())
+    prefer_keywords = prefer_link_keywords or DEFAULT_LINK_KEYWORDS
+    verification_link = _pick_preferred_link(links, prefer_keywords)
+    if verification_link and confidence != "high":
+        for kw in prefer_keywords:
+            if kw and kw.lower() in verification_link.lower():
+                confidence = "high"
+                break
+
+    parts: List[str] = []
+    if verification_code:
+        parts.append(verification_code)
+    if verification_link:
+        parts.append(verification_link)
+    formatted = " ".join(parts) if parts else None
+
+    return {
+        "verification_code": verification_code,
+        "verification_link": verification_link,
+        "links": links,
+        "formatted": formatted,
+        "match_source": match_source,
+        "confidence": confidence,
+    }

@@ -422,6 +422,14 @@ def init_db(database_path: Optional[str] = None):
             (gptmail_api_key_default,),
         )
 
+        # PRD-00008 / FD-00008：对外开放 API Key（默认空，建议加密存储）
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO settings (key, value)
+            VALUES ('external_api_key', '')
+            """
+        )
+
         # 初始化刷新配置
         cursor.execute("""
             INSERT OR IGNORE INTO settings (key, value)

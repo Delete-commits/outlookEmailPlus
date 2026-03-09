@@ -11,8 +11,9 @@ from outlook_web.db import get_db
 from outlook_web.errors import build_error_payload
 from outlook_web.repositories import accounts as accounts_repo
 from outlook_web.repositories import groups as groups_repo
-from outlook_web.security.auth import login_required
+from outlook_web.security.auth import api_key_required, login_required
 from outlook_web.services import email_delete as email_delete_service
+from outlook_web.services import external_api as external_api_service
 from outlook_web.services import graph as graph_service
 from outlook_web.services import imap as imap_service
 from outlook_web.services.imap_generic import get_email_detail_imap_generic, get_emails_imap_generic
@@ -575,3 +576,322 @@ def api_extract_verification(email_addr: str) -> Any:
         # 其他错误
         error_payload = build_error_payload("EXTRACT_ERROR", "提取失败", "ExtractError", 500, str(e))
         return jsonify({"success": False, "error": error_payload}), 500
+
+
+# ==================== External Emails API ====================
+
+
+def _parse_external_common_args() -> dict:
+    """解析 external API 通用 query 参数（按 TDD-00008 做基础校验）。"""
+    email_addr = (request.args.get("email") or "").strip()
+    if not email_addr or "@" not in email_addr:
+        raise external_api_service.InvalidParamError("email 参数无效")
+
+    folder = (request.args.get("folder") or "inbox").strip().lower() or "inbox"
+    if folder not in {"inbox", "junkemail", "deleteditems"}:
+        raise external_api_service.InvalidParamError("folder 参数无效")
+
+    def _int_arg(name: str, default: int) -> int:
+        raw = request.args.get(name, None)
+        if raw is None or raw == "":
+            return default
+        try:
+            return int(raw)
+        except Exception as exc:
+            raise external_api_service.InvalidParamError(f"{name} 参数无效") from exc
+
+    skip = _int_arg("skip", 0)
+    top = _int_arg("top", 20)
+    if skip < 0:
+        raise external_api_service.InvalidParamError("skip 参数无效")
+    if top < 1 or top > 50:
+        raise external_api_service.InvalidParamError("top 参数无效")
+
+    since_minutes_raw = request.args.get("since_minutes", None)
+    since_minutes = None
+    if since_minutes_raw not in (None, ""):
+        try:
+            since_minutes = int(since_minutes_raw)
+        except Exception as exc:
+            raise external_api_service.InvalidParamError("since_minutes 参数无效") from exc
+        if since_minutes < 1:
+            raise external_api_service.InvalidParamError("since_minutes 参数无效")
+
+    return {
+        "email": email_addr,
+        "folder": folder,
+        "skip": skip,
+        "top": top,
+        "from_contains": (request.args.get("from_contains") or "").strip(),
+        "subject_contains": (request.args.get("subject_contains") or "").strip(),
+        "since_minutes": since_minutes,
+    }
+
+
+def _external_error_response(exc: external_api_service.ExternalApiError):
+    return jsonify(external_api_service.fail(exc.code, exc.message, data=exc.data)), exc.status
+
+
+@api_key_required
+def api_external_get_messages() -> Any:
+    try:
+        args = _parse_external_common_args()
+        emails, method = external_api_service.list_messages_for_external(
+            email_addr=args["email"],
+            folder=args["folder"],
+            skip=args["skip"],
+            top=args["top"],
+        )
+        filtered = external_api_service.filter_messages(
+            emails,
+            from_contains=args["from_contains"],
+            subject_contains=args["subject_contains"],
+            since_minutes=args["since_minutes"],
+        )
+
+        external_api_service.audit_external_api_access(
+            action="external_api_access",
+            email_addr=args["email"] or "",
+            endpoint="/api/external/messages",
+            status="ok",
+            details={"method": method, "count": len(filtered)},
+        )
+
+        return jsonify(external_api_service.ok({"emails": filtered, "count": len(filtered), "has_more": False}))
+    except external_api_service.ExternalApiError as exc:
+        external_api_service.audit_external_api_access(
+            action="external_api_access",
+            email_addr=(request.args.get("email") or "").strip(),
+            endpoint="/api/external/messages",
+            status="error",
+            details={"code": exc.code},
+        )
+        return _external_error_response(exc)
+    except Exception as exc:
+        external_api_service.audit_external_api_access(
+            action="external_api_access",
+            email_addr=(request.args.get("email") or "").strip(),
+            endpoint="/api/external/messages",
+            status="error",
+            details={"code": "INTERNAL_ERROR", "err": type(exc).__name__},
+        )
+        return jsonify(external_api_service.fail("INTERNAL_ERROR", "服务内部错误")), 500
+
+
+@api_key_required
+def api_external_get_latest_message() -> Any:
+    try:
+        args = _parse_external_common_args()
+        latest = external_api_service.get_latest_message_for_external(
+            email_addr=args["email"],
+            folder=args["folder"],
+            from_contains=args["from_contains"],
+            subject_contains=args["subject_contains"],
+            since_minutes=args["since_minutes"],
+        )
+        external_api_service.audit_external_api_access(
+            action="external_api_access",
+            email_addr=args["email"] or "",
+            endpoint="/api/external/messages/latest",
+            status="ok",
+            details={"method": latest.get("method")},
+        )
+        return jsonify(external_api_service.ok(latest))
+    except external_api_service.ExternalApiError as exc:
+        external_api_service.audit_external_api_access(
+            action="external_api_access",
+            email_addr=(request.args.get("email") or "").strip(),
+            endpoint="/api/external/messages/latest",
+            status="error",
+            details={"code": exc.code},
+        )
+        return _external_error_response(exc)
+    except Exception as exc:
+        external_api_service.audit_external_api_access(
+            action="external_api_access",
+            email_addr=(request.args.get("email") or "").strip(),
+            endpoint="/api/external/messages/latest",
+            status="error",
+            details={"code": "INTERNAL_ERROR", "err": type(exc).__name__},
+        )
+        return jsonify(external_api_service.fail("INTERNAL_ERROR", "服务内部错误")), 500
+
+
+@api_key_required
+def api_external_get_message_detail(message_id: str) -> Any:
+    try:
+        args = _parse_external_common_args()
+        detail = external_api_service.get_message_detail_for_external(
+            email_addr=args["email"],
+            message_id=message_id,
+            folder=args["folder"],
+        )
+        external_api_service.audit_external_api_access(
+            action="external_api_access",
+            email_addr=args["email"] or "",
+            endpoint="/api/external/messages/{message_id}",
+            status="ok",
+            details={"method": detail.get("method")},
+        )
+        return jsonify(external_api_service.ok(detail))
+    except external_api_service.ExternalApiError as exc:
+        external_api_service.audit_external_api_access(
+            action="external_api_access",
+            email_addr=(request.args.get("email") or "").strip(),
+            endpoint="/api/external/messages/{message_id}",
+            status="error",
+            details={"code": exc.code},
+        )
+        return _external_error_response(exc)
+    except Exception as exc:
+        external_api_service.audit_external_api_access(
+            action="external_api_access",
+            email_addr=(request.args.get("email") or "").strip(),
+            endpoint="/api/external/messages/{message_id}",
+            status="error",
+            details={"code": "INTERNAL_ERROR", "err": type(exc).__name__},
+        )
+        return jsonify(external_api_service.fail("INTERNAL_ERROR", "服务内部错误")), 500
+
+
+@api_key_required
+def api_external_get_message_raw(message_id: str) -> Any:
+    try:
+        args = _parse_external_common_args()
+        detail = external_api_service.get_message_detail_for_external(
+            email_addr=args["email"],
+            message_id=message_id,
+            folder=args["folder"],
+        )
+        return jsonify(
+            external_api_service.ok(
+                {
+                    "id": message_id,
+                    "email_address": args["email"],
+                    "raw_content": detail.get("raw_content", ""),
+                    "method": detail.get("method", ""),
+                }
+            )
+        )
+    except external_api_service.ExternalApiError as exc:
+        return _external_error_response(exc)
+    except Exception:
+        return jsonify(external_api_service.fail("INTERNAL_ERROR", "服务内部错误")), 500
+
+
+@api_key_required
+def api_external_get_verification_code() -> Any:
+    try:
+        args = _parse_external_common_args()
+        code_length = (request.args.get("code_length") or "").strip() or None
+        code_regex = (request.args.get("code_regex") or "").strip() or None
+        code_source = (request.args.get("code_source") or "all").strip().lower()
+        if code_source not in {"subject", "content", "html", "all"}:
+            raise external_api_service.InvalidParamError("code_source 参数无效")
+
+        result = external_api_service.get_verification_result(
+            email_addr=args["email"],
+            folder=args["folder"],
+            from_contains=args["from_contains"],
+            subject_contains=args["subject_contains"],
+            since_minutes=args["since_minutes"],
+            code_regex=code_regex,
+            code_length=code_length,
+            code_source=code_source,
+        )
+        if not result.get("verification_code"):
+            raise external_api_service.VerificationCodeNotFoundError("未找到符合条件的验证码邮件")
+
+        external_api_service.audit_external_api_access(
+            action="external_api_access",
+            email_addr=args["email"] or "",
+            endpoint="/api/external/verification-code",
+            status="ok",
+            details={"matched_email_id": result.get("matched_email_id"), "method": result.get("method")},
+        )
+        return jsonify(external_api_service.ok(result))
+    except external_api_service.ExternalApiError as exc:
+        external_api_service.audit_external_api_access(
+            action="external_api_access",
+            email_addr=(request.args.get("email") or "").strip(),
+            endpoint="/api/external/verification-code",
+            status="error",
+            details={"code": exc.code},
+        )
+        return _external_error_response(exc)
+    except ValueError:
+        return jsonify(external_api_service.fail("INVALID_PARAM", "参数错误")), 400
+    except Exception:
+        return jsonify(external_api_service.fail("INTERNAL_ERROR", "服务内部错误")), 500
+
+
+@api_key_required
+def api_external_get_verification_link() -> Any:
+    try:
+        args = _parse_external_common_args()
+        result = external_api_service.get_verification_result(
+            email_addr=args["email"],
+            folder=args["folder"],
+            from_contains=args["from_contains"],
+            subject_contains=args["subject_contains"],
+            since_minutes=args["since_minutes"],
+        )
+        if not result.get("verification_link"):
+            raise external_api_service.VerificationLinkNotFoundError("未找到符合条件的验证链接邮件")
+
+        external_api_service.audit_external_api_access(
+            action="external_api_access",
+            email_addr=args["email"] or "",
+            endpoint="/api/external/verification-link",
+            status="ok",
+            details={"matched_email_id": result.get("matched_email_id"), "method": result.get("method")},
+        )
+        return jsonify(external_api_service.ok(result))
+    except external_api_service.ExternalApiError as exc:
+        external_api_service.audit_external_api_access(
+            action="external_api_access",
+            email_addr=(request.args.get("email") or "").strip(),
+            endpoint="/api/external/verification-link",
+            status="error",
+            details={"code": exc.code},
+        )
+        return _external_error_response(exc)
+    except Exception:
+        return jsonify(external_api_service.fail("INTERNAL_ERROR", "服务内部错误")), 500
+
+
+@api_key_required
+def api_external_wait_message() -> Any:
+    try:
+        args = _parse_external_common_args()
+        timeout_seconds = request.args.get("timeout_seconds", "30")
+        poll_interval = request.args.get("poll_interval", "5")
+        result = external_api_service.wait_for_message(
+            email_addr=args["email"],
+            timeout_seconds=int(timeout_seconds),
+            poll_interval=int(poll_interval),
+            folder=args["folder"],
+            from_contains=args["from_contains"],
+            subject_contains=args["subject_contains"],
+            since_minutes=args["since_minutes"],
+        )
+
+        external_api_service.audit_external_api_access(
+            action="external_api_access",
+            email_addr=args["email"] or "",
+            endpoint="/api/external/wait-message",
+            status="ok",
+            details={"matched_email_id": result.get("id"), "method": result.get("method")},
+        )
+        return jsonify(external_api_service.ok(result))
+    except external_api_service.ExternalApiError as exc:
+        external_api_service.audit_external_api_access(
+            action="external_api_access",
+            email_addr=(request.args.get("email") or "").strip(),
+            endpoint="/api/external/wait-message",
+            status="error",
+            details={"code": exc.code},
+        )
+        return _external_error_response(exc)
+    except Exception:
+        return jsonify(external_api_service.fail("INTERNAL_ERROR", "服务内部错误")), 500

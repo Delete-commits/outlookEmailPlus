@@ -309,14 +309,26 @@ def get_email_detail_imap(
     message_id: str,
     folder: str = "inbox",
 ) -> Optional[Dict]:
-    """使用 IMAP 获取邮件详情"""
+    """使用 IMAP 获取邮件详情（默认使用新版服务器）。"""
+    return get_email_detail_imap_with_server(account, client_id, refresh_token, message_id, folder, IMAP_SERVER_NEW)
+
+
+def get_email_detail_imap_with_server(
+    account: str,
+    client_id: str,
+    refresh_token: str,
+    message_id: str,
+    folder: str = "inbox",
+    server: str = IMAP_SERVER_NEW,
+) -> Optional[Dict]:
+    """使用 IMAP 获取邮件详情（支持指定服务器）。"""
     access_token = get_access_token_imap(client_id, refresh_token)
     if not access_token:
         return None
 
     connection = None
     try:
-        connection = imaplib.IMAP4_SSL(IMAP_SERVER_NEW, IMAP_PORT)
+        connection = imaplib.IMAP4_SSL(server, IMAP_PORT)
         auth_string = f"user={account}\1auth=Bearer {access_token}\1\1".encode("utf-8")
         connection.authenticate("XOAUTH2", lambda x: auth_string)
 
@@ -361,6 +373,12 @@ def get_email_detail_imap(
         raw_email = msg_data[0][1]
         msg = email.message_from_bytes(raw_email)
 
+        raw_text = ""
+        try:
+            raw_text = raw_email.decode("utf-8", errors="replace") if isinstance(raw_email, (bytes, bytearray)) else ""
+        except Exception:
+            raw_text = ""
+
         return {
             "id": message_id,
             "subject": decode_header_value(msg.get("Subject", "无主题")),
@@ -369,6 +387,7 @@ def get_email_detail_imap(
             "cc": decode_header_value(msg.get("Cc", "")),
             "date": msg.get("Date", "未知时间"),
             "body": get_email_body(msg),
+            "raw_content": raw_text,
         }
     except Exception:
         return None

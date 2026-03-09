@@ -1,0 +1,940 @@
+openapi: 3.0.3
+info:
+  title: Outlook Email Plus External API
+  version: 0.1.0-draft
+  description: |
+    Outlook Email Plus 对外验证码与邮件读取开放 API 草稿。
+
+    目标场景：
+    - 本地化部署后的自动化注册流程
+    - 验证码与验证链接自动提取
+    - 邮件详情排查与部署自检
+
+    说明：
+    - 当前为草稿版本，接口与字段以 `docs/PRD/PRD-00008-对外验证码与邮件读取开放API.md`
+      和 `docs/FD/FD-00008-对外验证码与邮件读取开放API.md` 为准。
+    - 所有开放接口统一使用 `X-API-Key` 进行鉴权。
+servers:
+  - url: http://localhost:5000
+    description: 本地开发/单机部署
+  - url: https://your-domain.example.com
+    description: 反向代理/生产部署
+security:
+  - ApiKeyAuth: []
+tags:
+  - name: Messages
+    description: 邮件列表、详情与 RAW 内容查询
+  - name: Verification
+    description: 验证码与验证链接提取
+  - name: System
+    description: 外部健康检查、能力查询、账号状态检查
+paths:
+  /api/external/messages:
+    get:
+      tags: [Messages]
+      summary: 获取邮件列表
+      description: 按邮箱地址和筛选条件获取最近邮件列表。
+      operationId: listExternalMessages
+      parameters:
+        - $ref: '#/components/parameters/Email'
+        - $ref: '#/components/parameters/Folder'
+        - $ref: '#/components/parameters/Skip'
+        - $ref: '#/components/parameters/Top'
+        - $ref: '#/components/parameters/FromContains'
+        - $ref: '#/components/parameters/SubjectContains'
+        - $ref: '#/components/parameters/SinceMinutes'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageListResponse'
+        '400':
+          $ref: '#/components/responses/InvalidParam'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ApiKeyNotConfigured'
+        '404':
+          $ref: '#/components/responses/AccountNotFound'
+        '502':
+          $ref: '#/components/responses/UpstreamReadFailed'
+  /api/external/messages/latest:
+    get:
+      tags: [Messages]
+      summary: 获取最新匹配邮件
+      description: 返回符合筛选条件的最新一封邮件。
+      operationId: getLatestExternalMessage
+      parameters:
+        - $ref: '#/components/parameters/Email'
+        - $ref: '#/components/parameters/Folder'
+        - $ref: '#/components/parameters/FromContains'
+        - $ref: '#/components/parameters/SubjectContains'
+        - $ref: '#/components/parameters/SinceMinutes'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LatestMessageResponse'
+        '400':
+          $ref: '#/components/responses/InvalidParam'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ApiKeyNotConfigured'
+        '404':
+          $ref: '#/components/responses/MailNotFound'
+        '502':
+          $ref: '#/components/responses/UpstreamReadFailed'
+  /api/external/messages/{message_id}:
+    get:
+      tags: [Messages]
+      summary: 获取邮件详情
+      description: 根据 message_id 与 email 获取单封邮件的详情内容。
+      operationId: getExternalMessageDetail
+      parameters:
+        - $ref: '#/components/parameters/MessageIdPath'
+        - $ref: '#/components/parameters/Email'
+        - $ref: '#/components/parameters/FolderOptional'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageDetailResponse'
+        '400':
+          $ref: '#/components/responses/InvalidParam'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ApiKeyNotConfigured'
+        '404':
+          $ref: '#/components/responses/MailNotFound'
+        '502':
+          $ref: '#/components/responses/UpstreamReadFailed'
+  /api/external/messages/{message_id}/raw:
+    get:
+      tags: [Messages]
+      summary: 获取邮件 RAW 内容
+      description: 仅返回指定邮件的原始内容，便于排查编码和解析问题。
+      operationId: getExternalMessageRaw
+      parameters:
+        - $ref: '#/components/parameters/MessageIdPath'
+        - $ref: '#/components/parameters/Email'
+        - $ref: '#/components/parameters/FolderOptional'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageRawResponse'
+        '400':
+          $ref: '#/components/responses/InvalidParam'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ApiKeyNotConfigured'
+        '404':
+          $ref: '#/components/responses/MailNotFound'
+        '502':
+          $ref: '#/components/responses/UpstreamReadFailed'
+  /api/external/verification-code:
+    get:
+      tags: [Verification]
+      summary: 获取最新验证码
+      description: 从符合条件的最新邮件中提取验证码。
+      operationId: getExternalVerificationCode
+      parameters:
+        - $ref: '#/components/parameters/Email'
+        - $ref: '#/components/parameters/Folder'
+        - $ref: '#/components/parameters/FromContains'
+        - $ref: '#/components/parameters/SubjectContains'
+        - $ref: '#/components/parameters/SinceMinutes'
+        - $ref: '#/components/parameters/CodeLength'
+        - $ref: '#/components/parameters/CodeRegex'
+        - $ref: '#/components/parameters/CodeSource'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerificationCodeResponse'
+        '400':
+          $ref: '#/components/responses/InvalidParam'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ApiKeyNotConfigured'
+        '404':
+          description: 未找到匹配邮件或验证码
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                mailNotFound:
+                  value:
+                    success: false
+                    code: MAIL_NOT_FOUND
+                    message: 未找到匹配邮件
+                    data: null
+                verificationNotFound:
+                  value:
+                    success: false
+                    code: VERIFICATION_CODE_NOT_FOUND
+                    message: 未找到符合条件的验证码邮件
+                    data: null
+        '502':
+          $ref: '#/components/responses/UpstreamReadFailed'
+  /api/external/verification-link:
+    get:
+      tags: [Verification]
+      summary: 获取最新验证链接
+      description: 从符合条件的最新邮件中提取首个高置信验证链接。
+      operationId: getExternalVerificationLink
+      parameters:
+        - $ref: '#/components/parameters/Email'
+        - $ref: '#/components/parameters/Folder'
+        - $ref: '#/components/parameters/FromContains'
+        - $ref: '#/components/parameters/SubjectContains'
+        - $ref: '#/components/parameters/SinceMinutes'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerificationLinkResponse'
+        '400':
+          $ref: '#/components/responses/InvalidParam'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ApiKeyNotConfigured'
+        '404':
+          description: 未找到匹配邮件或验证链接
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                mailNotFound:
+                  value:
+                    success: false
+                    code: MAIL_NOT_FOUND
+                    message: 未找到匹配邮件
+                    data: null
+                linkNotFound:
+                  value:
+                    success: false
+                    code: VERIFICATION_LINK_NOT_FOUND
+                    message: 未找到符合条件的验证链接邮件
+                    data: null
+        '502':
+          $ref: '#/components/responses/UpstreamReadFailed'
+  /api/external/wait-message:
+    get:
+      tags: [Verification]
+      summary: 等待新邮件到达
+      description: |
+        在指定超时时间内轮询等待符合条件的新邮件到达。
+
+        适用于自动化注册流程，减少客户端频繁轮询。
+      operationId: waitExternalMessage
+      parameters:
+        - $ref: '#/components/parameters/Email'
+        - $ref: '#/components/parameters/Folder'
+        - $ref: '#/components/parameters/FromContains'
+        - $ref: '#/components/parameters/SubjectContains'
+        - $ref: '#/components/parameters/SinceMinutes'
+        - $ref: '#/components/parameters/TimeoutSeconds'
+        - $ref: '#/components/parameters/PollInterval'
+      responses:
+        '200':
+          description: 成功命中新邮件
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LatestMessageResponse'
+        '400':
+          $ref: '#/components/responses/InvalidParam'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ApiKeyNotConfigured'
+        '404':
+          $ref: '#/components/responses/MailNotFound'
+        '502':
+          $ref: '#/components/responses/UpstreamReadFailed'
+  /api/external/health:
+    get:
+      tags: [System]
+      summary: 外部健康检查
+      description: 用于本地部署后的接口连通性自检。
+      operationId: externalHealth
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ApiKeyNotConfigured'
+  /api/external/capabilities:
+    get:
+      tags: [System]
+      summary: 查询开放能力
+      description: 返回当前实例支持的对外开放能力列表。
+      operationId: externalCapabilities
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CapabilitiesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ApiKeyNotConfigured'
+  /api/external/account-status:
+    get:
+      tags: [System]
+      summary: 查询邮箱账号状态
+      description: 检查指定邮箱账号是否存在及基础可用状态。
+      operationId: externalAccountStatus
+      parameters:
+        - $ref: '#/components/parameters/Email'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountStatusResponse'
+        '400':
+          $ref: '#/components/responses/InvalidParam'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ApiKeyNotConfigured'
+        '404':
+          $ref: '#/components/responses/AccountNotFound'
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+  parameters:
+    Email:
+      name: email
+      in: query
+      required: true
+      description: 目标邮箱地址
+      schema:
+        type: string
+        format: email
+      example: user@outlook.com
+    Folder:
+      name: folder
+      in: query
+      required: false
+      description: 邮件文件夹
+      schema:
+        type: string
+        enum: [inbox, junkemail, deleteditems]
+        default: inbox
+    FolderOptional:
+      name: folder
+      in: query
+      required: false
+      description: 邮件详情读取时的文件夹提示参数
+      schema:
+        type: string
+        enum: [inbox, junkemail, deleteditems]
+        default: inbox
+    Skip:
+      name: skip
+      in: query
+      required: false
+      description: 分页偏移
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    Top:
+      name: top
+      in: query
+      required: false
+      description: 返回数量，最大建议 50
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 50
+        default: 20
+    FromContains:
+      name: from_contains
+      in: query
+      required: false
+      description: 发件人模糊匹配关键字
+      schema:
+        type: string
+    SubjectContains:
+      name: subject_contains
+      in: query
+      required: false
+      description: 主题模糊匹配关键字
+      schema:
+        type: string
+    SinceMinutes:
+      name: since_minutes
+      in: query
+      required: false
+      description: 最近 N 分钟内的邮件
+      schema:
+        type: integer
+        minimum: 1
+        default: 10
+    MessageIdPath:
+      name: message_id
+      in: path
+      required: true
+      description: 邮件 ID
+      schema:
+        type: string
+    CodeLength:
+      name: code_length
+      in: query
+      required: false
+      description: 验证码长度范围，例如 `4-8` 或 `6-6`
+      schema:
+        type: string
+        pattern: '^\\d+-\\d+$'
+      example: 4-8
+    CodeRegex:
+      name: code_regex
+      in: query
+      required: false
+      description: 自定义验证码正则表达式
+      schema:
+        type: string
+      example: '\\b\\d{6}\\b'
+    CodeSource:
+      name: code_source
+      in: query
+      required: false
+      description: 验证码提取来源
+      schema:
+        type: string
+        enum: [subject, content, html, all]
+        default: all
+    TimeoutSeconds:
+      name: timeout_seconds
+      in: query
+      required: false
+      description: 等待超时时间，最大建议 120 秒
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 120
+        default: 30
+    PollInterval:
+      name: poll_interval
+      in: query
+      required: false
+      description: 轮询间隔秒数
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 30
+        default: 5
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [success, code, message, data]
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        code:
+          type: string
+        message:
+          type: string
+        data:
+          nullable: true
+          description: 失败时固定为 null
+          example: null
+    MessageSummary:
+      type: object
+      required:
+        - id
+        - email_address
+        - from_address
+        - subject
+        - has_html
+        - timestamp
+        - created_at
+        - is_read
+      properties:
+        id:
+          type: string
+          example: AAMkAGI2...
+        email_address:
+          type: string
+          format: email
+          example: user@outlook.com
+        from_address:
+          type: string
+          example: noreply@example.com
+        subject:
+          type: string
+          example: Your verification code
+        content_preview:
+          type: string
+          example: Your code is 123456
+        has_html:
+          type: boolean
+          example: true
+        timestamp:
+          type: integer
+          format: int64
+          example: 1772961600
+        created_at:
+          type: string
+          format: date-time
+          example: '2026-03-08T12:00:00Z'
+        is_read:
+          type: boolean
+          example: false
+        method:
+          type: string
+          example: Graph API
+    MessageDetail:
+      type: object
+      required:
+        - id
+        - email_address
+        - from_address
+        - subject
+        - content
+        - html_content
+        - raw_content
+        - timestamp
+        - created_at
+        - has_html
+      properties:
+        id:
+          type: string
+        email_address:
+          type: string
+          format: email
+        from_address:
+          type: string
+        to_address:
+          type: string
+          example: receiver@example.com
+        subject:
+          type: string
+        content:
+          type: string
+          description: 纯文本正文
+        html_content:
+          type: string
+          description: HTML 正文
+        raw_content:
+          type: string
+          description: 原始邮件内容
+        timestamp:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+        has_html:
+          type: boolean
+        method:
+          type: string
+          example: Graph API
+    MessageRaw:
+      type: object
+      required: [id, email_address, raw_content]
+      properties:
+        id:
+          type: string
+        email_address:
+          type: string
+          format: email
+        raw_content:
+          type: string
+        method:
+          type: string
+          example: IMAP (New)
+    VerificationCodeData:
+      type: object
+      required:
+        - email
+        - verification_code
+        - matched_email_id
+        - from
+        - subject
+        - received_at
+      properties:
+        email:
+          type: string
+          format: email
+          example: user@outlook.com
+        verification_code:
+          type: string
+          example: '123456'
+        matched_email_id:
+          type: string
+          example: AAMkAGI2...
+        from:
+          type: string
+          example: noreply@example.com
+        subject:
+          type: string
+          example: Your verification code
+        received_at:
+          type: string
+          format: date-time
+          example: '2026-03-08T12:00:00Z'
+        match_source:
+          type: string
+          enum: [subject, content, html, all]
+          example: content
+        confidence:
+          type: string
+          enum: [high, medium, low]
+          example: high
+        method:
+          type: string
+          example: Graph API
+    VerificationLinkData:
+      type: object
+      required:
+        - email
+        - verification_link
+        - matched_email_id
+        - from
+        - subject
+        - received_at
+      properties:
+        email:
+          type: string
+          format: email
+        verification_link:
+          type: string
+          format: uri
+          example: https://example.com/verify?token=abc123
+        matched_email_id:
+          type: string
+        from:
+          type: string
+        subject:
+          type: string
+        received_at:
+          type: string
+          format: date-time
+        confidence:
+          type: string
+          enum: [high, medium, low]
+          example: high
+        method:
+          type: string
+          example: Graph API
+    HealthData:
+      type: object
+      required: [status, service, version, server_time_utc, database]
+      properties:
+        status:
+          type: string
+          example: ok
+        service:
+          type: string
+          example: outlook-email-plus
+        version:
+          type: string
+          example: 0.1.0-draft
+        server_time_utc:
+          type: string
+          format: date-time
+          example: '2026-03-08T12:00:00Z'
+        database:
+          type: string
+          example: ok
+    CapabilitiesData:
+      type: object
+      required: [service, version, features]
+      properties:
+        service:
+          type: string
+          example: outlook-email-plus
+        version:
+          type: string
+          example: 0.1.0-draft
+        features:
+          type: array
+          items:
+            type: string
+          example:
+            - message_list
+            - message_detail
+            - raw_content
+            - verification_code
+            - verification_link
+            - wait_message
+    AccountStatusData:
+      type: object
+      required:
+        - email
+        - exists
+      properties:
+        email:
+          type: string
+          format: email
+        exists:
+          type: boolean
+        account_type:
+          type: string
+          example: outlook
+        provider:
+          type: string
+          example: outlook
+        group_id:
+          type: integer
+          example: 1
+        last_refresh_at:
+          type: string
+          nullable: true
+          example: '2026-03-08 20:00:00'
+        preferred_method:
+          type: string
+          example: graph
+        can_read:
+          type: boolean
+          example: true
+    MessageListResponse:
+      type: object
+      required: [success, code, message, data]
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        code:
+          type: string
+          example: OK
+        message:
+          type: string
+          example: success
+        data:
+          type: object
+          required: [emails, count]
+          properties:
+            emails:
+              type: array
+              items:
+                $ref: '#/components/schemas/MessageSummary'
+            count:
+              type: integer
+              example: 2
+            has_more:
+              type: boolean
+              example: false
+    LatestMessageResponse:
+      type: object
+      required: [success, code, message, data]
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        code:
+          type: string
+          example: OK
+        message:
+          type: string
+          example: success
+        data:
+          $ref: '#/components/schemas/MessageSummary'
+    MessageDetailResponse:
+      type: object
+      required: [success, code, message, data]
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        code:
+          type: string
+          example: OK
+        message:
+          type: string
+          example: success
+        data:
+          $ref: '#/components/schemas/MessageDetail'
+    MessageRawResponse:
+      type: object
+      required: [success, code, message, data]
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        code:
+          type: string
+          example: OK
+        message:
+          type: string
+          example: success
+        data:
+          $ref: '#/components/schemas/MessageRaw'
+    VerificationCodeResponse:
+      type: object
+      required: [success, code, message, data]
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        code:
+          type: string
+          example: OK
+        message:
+          type: string
+          example: success
+        data:
+          $ref: '#/components/schemas/VerificationCodeData'
+    VerificationLinkResponse:
+      type: object
+      required: [success, code, message, data]
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        code:
+          type: string
+          example: OK
+        message:
+          type: string
+          example: success
+        data:
+          $ref: '#/components/schemas/VerificationLinkData'
+    HealthResponse:
+      type: object
+      required: [success, code, message, data]
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        code:
+          type: string
+          example: OK
+        message:
+          type: string
+          example: success
+        data:
+          $ref: '#/components/schemas/HealthData'
+    CapabilitiesResponse:
+      type: object
+      required: [success, code, message, data]
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        code:
+          type: string
+          example: OK
+        message:
+          type: string
+          example: success
+        data:
+          $ref: '#/components/schemas/CapabilitiesData'
+    AccountStatusResponse:
+      type: object
+      required: [success, code, message, data]
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        code:
+          type: string
+          example: OK
+        message:
+          type: string
+          example: success
+        data:
+          $ref: '#/components/schemas/AccountStatusData'
+  responses:
+    Unauthorized:
+      description: API Key 缺失或无效
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            code: UNAUTHORIZED
+            message: API Key 缺失或无效
+            data: null
+    ApiKeyNotConfigured:
+      description: 系统未配置对外 API Key
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            code: API_KEY_NOT_CONFIGURED
+            message: 系统未配置对外 API Key
+            data: null
+    InvalidParam:
+      description: 参数错误
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            code: INVALID_PARAM
+            message: 参数错误
+            data: null
+    AccountNotFound:
+      description: 指定邮箱账号不存在
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            code: ACCOUNT_NOT_FOUND
+            message: 邮箱账号不存在
+            data: null
+    MailNotFound:
+      description: 未找到匹配邮件
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            code: MAIL_NOT_FOUND
+            message: 未找到匹配邮件
+            data: null
+    UpstreamReadFailed:
+      description: Graph / IMAP 均读取失败
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            code: UPSTREAM_READ_FAILED
+            message: Graph / IMAP 均读取失败
+            data: null

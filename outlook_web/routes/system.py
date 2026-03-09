@@ -24,4 +24,21 @@ def create_blueprint() -> Blueprint:
         view_func=system_controller.api_system_upgrade_status,
         methods=["GET"],
     )
+
+    # PRD-00008 / FD-00008：对外开放系统自检接口（仅 API Key 鉴权）
+    bp.add_url_rule(
+        "/api/external/health",
+        view_func=system_controller.api_external_health,
+        methods=["GET"],
+    )
+    bp.add_url_rule(
+        "/api/external/capabilities",
+        view_func=system_controller.api_external_capabilities,
+        methods=["GET"],
+    )
+    bp.add_url_rule(
+        "/api/external/account-status",
+        view_func=system_controller.api_external_account_status,
+        methods=["GET"],
+    )
     return bp

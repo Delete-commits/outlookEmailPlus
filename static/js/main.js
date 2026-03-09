@@ -973,10 +973,35 @@ ${details}
                 const data = await response.json();
 
                 if (data.success) {
-                    // 密码不显示，只显示 API Key
-                    document.getElementById('settingsApiKey').value = data.settings.gptmail_api_key || '';
-                    // 密码框留空
+                    // 密码不回显
                     document.getElementById('settingsPassword').value = '';
+
+                    // GPTMail API Key（仅脱敏展示，避免回填明文）
+                    const gptmailApiKeyEl = document.getElementById('settingsApiKey');
+                    if (gptmailApiKeyEl) {
+                        const maskedValue = data.settings.gptmail_api_key_masked || '';
+                        gptmailApiKeyEl.value = maskedValue;
+                        gptmailApiKeyEl.dataset.maskedValue = maskedValue;
+                        gptmailApiKeyEl.dataset.isSet = data.settings.gptmail_api_key_set ? 'true' : 'false';
+                    }
+
+                    // 对外开放 API Key（仅脱敏展示，避免回填明文）
+                    const externalApiKeyEl = document.getElementById('settingsExternalApiKey');
+                    if (externalApiKeyEl) {
+                        const maskedValue = data.settings.external_api_key_masked || '';
+                        externalApiKeyEl.value = maskedValue;
+                        externalApiKeyEl.dataset.maskedValue = maskedValue;
+                        externalApiKeyEl.dataset.isSet = data.settings.external_api_key_set ? 'true' : 'false';
+                    }
+
+                    const externalHintEl = document.getElementById('externalApiKeyHint');
+                    if (externalHintEl) {
+                        if (data.settings.external_api_key_set) {
+                            externalHintEl.textContent = `已设置：${data.settings.external_api_key_masked || ''}（请求头：X-API-Key；清空后保存可禁用对外接口）`;
+                        } else {
+                            externalHintEl.textContent = '未设置（设置后可通过 /api/external/* 对外开放接口读取邮件与验证码）';
+                        }
+                    }
 
                     // 加载刷新配置
                     document.getElementById('refreshIntervalDays').value = data.settings.refresh_interval_days || '30';
@@ -1071,7 +1096,17 @@ ${details}
         // 保存设置
         async function saveSettings() {
             const password = document.getElementById('settingsPassword').value;
-            const apiKey = document.getElementById('settingsApiKey').value.trim();
+
+            const gptmailApiKeyEl = document.getElementById('settingsApiKey');
+            const gptmailApiKey = gptmailApiKeyEl ? gptmailApiKeyEl.value.trim() : '';
+            const gptmailApiKeyMasked = gptmailApiKeyEl ? (gptmailApiKeyEl.dataset.maskedValue || '') : '';
+            const gptmailApiKeyIsSet = gptmailApiKeyEl ? gptmailApiKeyEl.dataset.isSet === 'true' : false;
+
+            const externalApiKeyEl = document.getElementById('settingsExternalApiKey');
+            const externalApiKey = externalApiKeyEl ? externalApiKeyEl.value.trim() : '';
+            const externalApiKeyMasked = externalApiKeyEl ? (externalApiKeyEl.dataset.maskedValue || '') : '';
+            const externalApiKeyIsSet = externalApiKeyEl ? externalApiKeyEl.dataset.isSet === 'true' : false;
+
             const refreshDays = document.getElementById('refreshIntervalDays').value;
             const refreshDelay = document.getElementById('refreshDelaySeconds').value;
             const refreshCron = document.getElementById('refreshCron').value.trim();
@@ -1090,8 +1125,15 @@ ${details}
                 settings.login_password = password;
             }
 
-            // API Key 可以为空（清除）
-            settings.gptmail_api_key = apiKey;
+            // GPTMail API Key：仅当用户真实输入时才覆盖（避免把脱敏占位符写回 DB）
+            if (!(gptmailApiKeyIsSet && gptmailApiKey && gptmailApiKey === gptmailApiKeyMasked)) {
+                settings.gptmail_api_key = gptmailApiKey;
+            }
+
+            // 对外开放 API Key：允许清空（空字符串）
+            if (!(externalApiKeyIsSet && externalApiKey && externalApiKey === externalApiKeyMasked)) {
+                settings.external_api_key = externalApiKey;
+            }
 
             // 刷新配置
             const days = parseInt(refreshDays);

@@ -172,6 +172,67 @@ def login_required(f):
     return decorated_function
 
 
+def api_key_required(f):
+    """
+    对外开放 API 的 API Key 校验装饰器。
+
+    规则：
+    1. 仅接受 Header 中的 `X-API-Key`
+    2. 未配置 external_api_key 时返回 403（API_KEY_NOT_CONFIGURED）
+    3. 缺少或错误时返回 401（UNAUTHORIZED）
+    4. 不依赖 session，不触发登录跳转
+    """
+
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        from outlook_web.repositories import settings as settings_repo
+
+        provided_key = (request.headers.get("X-API-Key") or "").strip()
+        if not provided_key:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "code": "UNAUTHORIZED",
+                        "message": "API Key 缺失或无效",
+                        "data": None,
+                    }
+                ),
+                401,
+            )
+
+        configured_key = settings_repo.get_external_api_key()
+        if not configured_key:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "code": "API_KEY_NOT_CONFIGURED",
+                        "message": "系统未配置对外 API Key",
+                        "data": None,
+                    }
+                ),
+                403,
+            )
+
+        if not secrets.compare_digest(str(provided_key), str(configured_key)):
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "code": "UNAUTHORIZED",
+                        "message": "API Key 缺失或无效",
+                        "data": None,
+                    }
+                ),
+                401,
+            )
+
+        return f(*args, **kwargs)
+
+    return decorated_function
+
+
 def get_client_ip() -> str:
     """
     获取客户端 IP（安全实现）

@@ -426,6 +426,15 @@ def get_email_detail_imap_generic(
         msg = email.message_from_bytes(raw_email)
         body_text, body_html = _extract_text_and_html(msg)
 
+        raw_content = ""
+        try:
+            if isinstance(raw_email, (bytes, bytearray)):
+                raw_content = raw_email.decode("utf-8", errors="replace")
+            else:
+                raw_content = str(raw_email)
+        except Exception:
+            raw_content = ""
+
         detail: Dict[str, Any] = {
             "id": message_id,
             "subject": decode_header_value(msg.get("Subject", "无主题")),
@@ -437,6 +446,7 @@ def get_email_detail_imap_generic(
             "has_attachments": _has_attachments(msg),
             "body_text": body_text or "",
             "body_html": body_html or "",
+            "raw_content": raw_content,
         }
 
         # 兼容现有前端/验证码提取：提供 body/body_type
