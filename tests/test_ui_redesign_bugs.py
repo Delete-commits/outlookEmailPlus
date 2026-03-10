@@ -34,13 +34,28 @@ class TestUIRedesignBugFixes(unittest.TestCase):
         self._login(client)
         return client
 
+    def _get_text(self, client, path):
+        """Read response text and close the underlying file handle promptly."""
+        resp = client.get(path)
+        try:
+            return resp.status_code, resp.data.decode("utf-8")
+        finally:
+            resp.close()
+
+    def _get_json(self, client, path):
+        """Read JSON payload and close the response object."""
+        resp = client.get(path)
+        try:
+            return resp.status_code, resp.get_json()
+        finally:
+            resp.close()
+
     # ==================== BUG-002: 账号栏显示 ====================
 
     def test_bug002_current_account_bar_exists(self):
         """BUG-002: index.html 中存在 currentAccountBar 元素"""
         client = self._get_client()
-        resp = client.get("/")
-        html = resp.data.decode("utf-8")
+        _, html = self._get_text(client, "/")
         self.assertIn('id="currentAccountBar"', html)
         self.assertIn('id="currentAccountEmail"', html)
         self.assertIn('id="currentAccount"', html)
@@ -48,8 +63,7 @@ class TestUIRedesignBugFixes(unittest.TestCase):
     def test_bug002_accounts_js_shows_account_bar(self):
         """BUG-002: accounts.js 中 selectAccount 应操作 currentAccountBar 而非 currentAccount"""
         client = self._get_client()
-        resp = client.get("/static/js/features/accounts.js")
-        js = resp.data.decode("utf-8")
+        _, js = self._get_text(client, "/static/js/features/accounts.js")
         self.assertIn("currentAccountBar", js, "selectAccount() 应操作 #currentAccountBar 元素")
 
     # ==================== BUG-003: 设置页面 ====================
@@ -57,16 +71,14 @@ class TestUIRedesignBugFixes(unittest.TestCase):
     def test_bug003_settings_page_has_content(self):
         """BUG-003: 设置页面应有实质性内容，而非仅占位文字"""
         client = self._get_client()
-        resp = client.get("/")
-        html = resp.data.decode("utf-8")
+        _, html = self._get_text(client, "/")
         settings_section = re.search(r'id="page-settings".*?(?=id="page-|$)', html, re.DOTALL)
         self.assertIsNotNone(settings_section, "找不到 page-settings 区域")
 
     def test_bug003_navigate_triggers_settings_load(self):
         """BUG-003: navigate('settings') 应触发设置加载"""
         client = self._get_client()
-        resp = client.get("/static/js/main.js")
-        js = resp.data.decode("utf-8")
+        _, js = self._get_text(client, "/static/js/main.js")
         self.assertIn("settings", js)
 
     # ==================== BUG-004: 弹窗居中 ====================
@@ -74,23 +86,20 @@ class TestUIRedesignBugFixes(unittest.TestCase):
     def test_bug004_modal_css_centering(self):
         """BUG-004: CSS 中 .modal 应有 flex 居中属性"""
         client = self._get_client()
-        resp = client.get("/static/css/main.css")
-        css = resp.data.decode("utf-8")
+        _, css = self._get_text(client, "/static/css/main.css")
         self.assertIn("align-items: center", css)
         self.assertIn("justify-content: center", css)
 
     def test_bug004_modal_content_max_width(self):
         """BUG-004: .modal-content 应有 max-width 限制"""
         client = self._get_client()
-        resp = client.get("/static/css/main.css")
-        css = resp.data.decode("utf-8")
+        _, css = self._get_text(client, "/static/css/main.css")
         self.assertIn("max-width: 560px", css)
 
     def test_bug004_all_modals_use_modal_class(self):
         """BUG-004: modals.html 中所有弹窗应使用 class='modal'"""
         client = self._get_client()
-        resp = client.get("/")
-        html = resp.data.decode("utf-8")
+        _, html = self._get_text(client, "/")
         modal_ids = re.findall(r'id="(\w+Modal)"', html)
         for modal_id in modal_ids:
             if modal_id == "fullscreenEmailModal":
@@ -110,14 +119,13 @@ class TestUIRedesignBugFixes(unittest.TestCase):
     def test_bug005_verification_extract_api_exists(self):
         """BUG-005: 验证码提取 API 端点存在"""
         client = self._get_client()
-        resp = client.get("/api/emails/nonexistent@test.com/extract-verification")
-        self.assertIn(resp.status_code, [200, 404], "验证码提取 API 应该返回 200 或 404")
+        status_code, _ = self._get_json(client, "/api/emails/nonexistent@test.com/extract-verification")
+        self.assertIn(status_code, [200, 404], "验证码提取 API 应该返回 200 或 404")
 
     def test_bug005_copy_verification_function_exists(self):
         """BUG-005: JS 中存在 copyVerificationInfo 函数"""
         client = self._get_client()
-        resp = client.get("/static/js/features/groups.js")
-        js = resp.data.decode("utf-8")
+        _, js = self._get_text(client, "/static/js/features/groups.js")
         self.assertIn("function copyVerificationInfo", js)
 
     # ==================== BUG-006: 卡片颜色 ====================
@@ -125,8 +133,7 @@ class TestUIRedesignBugFixes(unittest.TestCase):
     def test_bug006_card_color_array_exists(self):
         """BUG-006: 临时邮箱渲染应有多种颜色"""
         client = self._get_client()
-        resp = client.get("/static/js/features/temp_emails.js")
-        js = resp.data.decode("utf-8")
+        _, js = self._get_text(client, "/static/js/features/temp_emails.js")
         self.assertIn("renderTempEmailList", js)
 
     # ==================== BUG-010: 仪表盘 ====================
@@ -134,8 +141,7 @@ class TestUIRedesignBugFixes(unittest.TestCase):
     def test_bug010_dashboard_elements_exist(self):
         """BUG-010: 仪表盘统计元素存在"""
         client = self._get_client()
-        resp = client.get("/")
-        html = resp.data.decode("utf-8")
+        _, html = self._get_text(client, "/")
         for el_id in [
             "statTotalAccounts",
             "statValidTokens",
@@ -147,23 +153,20 @@ class TestUIRedesignBugFixes(unittest.TestCase):
     def test_bug010_dashboard_group_list_exists(self):
         """BUG-010: 仪表盘分组概览列表存在"""
         client = self._get_client()
-        resp = client.get("/")
-        html = resp.data.decode("utf-8")
+        _, html = self._get_text(client, "/")
         self.assertIn('id="dashboardGroupList"', html)
 
     def test_bug010_load_dashboard_function(self):
         """BUG-010: loadDashboard 函数存在且调用正确 API"""
         client = self._get_client()
-        resp = client.get("/static/js/main.js")
-        js = resp.data.decode("utf-8")
+        _, js = self._get_text(client, "/static/js/main.js")
         self.assertIn("function loadDashboard", js)
         self.assertIn("/api/groups", js)
 
     def test_bug010_groups_api_returns_data(self):
         """BUG-010: 分组 API 返回有效数据"""
         client = self._get_client()
-        resp = client.get("/api/groups")
-        data = resp.get_json()
+        _, data = self._get_json(client, "/api/groups")
         self.assertTrue(data.get("success"), "分组 API 应返回 success=true")
         self.assertIn("groups", data, "分组 API 应包含 groups 字段")
 
@@ -172,8 +175,7 @@ class TestUIRedesignBugFixes(unittest.TestCase):
     def test_all_pages_exist_in_html(self):
         """所有页面容器存在于 index.html"""
         client = self._get_client()
-        resp = client.get("/")
-        html = resp.data.decode("utf-8")
+        _, html = self._get_text(client, "/")
         pages = [
             "page-dashboard",
             "page-mailbox",
@@ -188,8 +190,7 @@ class TestUIRedesignBugFixes(unittest.TestCase):
     def test_sidebar_navigation_items(self):
         """侧边栏导航项完整"""
         client = self._get_client()
-        resp = client.get("/")
-        html = resp.data.decode("utf-8")
+        _, html = self._get_text(client, "/")
         nav_pages = [
             "dashboard",
             "mailbox",
@@ -204,8 +205,7 @@ class TestUIRedesignBugFixes(unittest.TestCase):
     def test_mailbox_three_column_structure(self):
         """邮箱管理三栏布局结构完整"""
         client = self._get_client()
-        resp = client.get("/")
-        html = resp.data.decode("utf-8")
+        _, html = self._get_text(client, "/")
         self.assertIn('class="mailbox-layout"', html)
         self.assertIn('class="groups-column"', html)
         self.assertIn('class="accounts-column"', html)
@@ -222,16 +222,15 @@ class TestUIRedesignBugFixes(unittest.TestCase):
             "/static/js/features/temp_emails.js",
         ]
         for js_path in js_files:
-            resp = client.get(js_path)
-            self.assertEqual(resp.status_code, 200, f"{js_path} 应返回 200")
-            self.assertGreater(len(resp.data), 100, f"{js_path} 内容不应为空")
+            status_code, js = self._get_text(client, js_path)
+            self.assertEqual(status_code, 200, f"{js_path} 应返回 200")
+            self.assertGreater(len(js), 100, f"{js_path} 内容不应为空")
 
     def test_css_loads_successfully(self):
         """CSS 文件可正常加载"""
         client = self._get_client()
-        resp = client.get("/static/css/main.css")
-        self.assertEqual(resp.status_code, 200)
-        css = resp.data.decode("utf-8")
+        status_code, css = self._get_text(client, "/static/css/main.css")
+        self.assertEqual(status_code, 200)
         self.assertIn("--clr-primary", css)
         self.assertIn("--bg-sidebar", css)
         self.assertIn("--bg-hover", css)

@@ -119,14 +119,12 @@ class ExternalApiBaseTest(unittest.TestCase):
             from outlook_web.db import get_db
 
             db = get_db()
-            rows = db.execute(
-                """
+            rows = db.execute("""
                 SELECT action, resource_id, details
                 FROM audit_logs
                 WHERE resource_type = 'external_api'
                 ORDER BY id ASC
-                """
-            ).fetchall()
+                """).fetchall()
         return [dict(row) for row in rows]
 
 
