@@ -1,5 +1,33 @@
 # DEVLOG
 
+## v1.7.0 - 第二次发布：README 交付口径补全
+
+发布日期：2026-03-15
+
+### 新增功能
+
+- 无新增业务功能。本次版本以“对外交付说明与发布内容整理”为主。
+
+### 修复
+
+- 重写 `README.md`，按当前代码实际能力补齐对外说明：对外只读 API、公网模式守卫（IP 白名单/限流/高风险端点禁用）、异步 probe、调度器、反向代理安全配置等。
+
+### 重要变更
+
+- 版本号从 `1.6.1` 提升到 `1.7.0`，应用 UI 侧边栏版本显示、系统/对外 API 返回的 `version` 字段均由 `outlook_web.__version__` 统一驱动。
+- 发布内容继续沿用仓库既有的 Docker 镜像 tar 与源码 zip 作为正式产物。
+
+### 测试/验证
+
+- 单元测试：`python -m unittest discover -s tests -v`
+  - 结果：`Ran 378 tests in 47.899s`
+  - 状态：全部通过
+- 构建验证：`docker build -t outlook-email-plus:v1.7.0 .`
+  - 状态：通过
+- 发布产物：
+  - `dist/outlook-email-plus-v1.7.0-docker.tar`（299,417,600 bytes）
+  - `dist/outlookEmailPlus-v1.7.0-src.zip`（930,706 bytes）
+
 ## v1.6.1 - 发布质量闸门清理与发布内容精简
 
 发布日期：2026-03-15
